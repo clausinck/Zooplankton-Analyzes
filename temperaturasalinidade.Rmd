@@ -1,0 +1,616 @@
+---
+title: 'Relatório de dados CPR Talude #1'
+author: "Claus Inck"
+date: "21/05/2020"
+output:
+  html_document: default
+  word_document: default
+  pdf_document: default
+---
+
+```{r echo=FALSE, message=FALSE}
+library(chron)
+library(RColorBrewer)
+library(lattice)
+library(ncdf4)
+#library(ncdf.tools)
+library(xlsx)
+library(ggplot2)
+library(ggthemes)
+library(readxl)
+library(DT)
+library(vegan)
+library(iNEXT)
+library(geobr)
+library(marmap)
+library(gsw)
+library(raster)
+library(gridExtra)
+
+```
+<img align="right" width=15% src="https://static.wixstatic.com/media/5795e9_5a67fb9d24704aacb8aa532f0efb5b8a~mv2.png/v1/fill/w_328,h_279,al_c,q_85,usm_0.66_1.00_0.01/logo%20labzoo.webp">
+
+
+<center>
+clausinck@gmail.com  
+Celular: +55 53 98156-7347  
+[Lattes](https://wwws.cnpq.br/cvlattesweb/PKG_MENU.menu?f_cod=0227517C56F6F83F43183080D9745D90#)
+  
+  
+<span style="color:red">
+TCC EM DESENVOLVIMENTO  - FAVOR NÃO DIVULGAR
+</span>
+</center>
+
+
+
+## Coordenadas do transecto
+
+Dados retirados da planilha de bordo, preenchida durante o transecto com a posição registrada a cada hora e posteriormente inserida em tabela do Excel.
+
+```{r include=FALSE}
+## Shapefile dos estados 
+rj <- read_state(code_state = "RJ")
+sp <- read_state(code_state = "SP")
+pr <- read_state(code_state = "PR")
+sc <- read_state(code_state = "SC")
+mg <- read_state(code_state = "MG")
+
+estados <- rbind(rj,sp,pr,sc,mg)
+
+mapa <- ggplot(estados) + geom_sf(fill="gray40", color="black", size=0.2) + 
+  coord_sf(xlim = c(-49,-42),ylim = c(-28,-22))
+
+```
+
+```{r }
+
+# Abrir a planilha de bordo em coordenadas.xlsx
+#planilha <- read.xlsx("~/TCC/ODV & R/coordenadas.xlsx", 1) 
+planilha[,2] <- format(planilha[,2], "%H:%M") 
+hora <- as.POSIXct(paste(planilha$Data, planilha$Hora), format = "%Y-%m-%d %H:%M", tz = "UTC")
+planilha[,3:4] <- round(planilha[,3:4], digits = 4)
+mapa + geom_point(data = planilha, aes(x=Longitude, y=Latitude))
+datatable(planilha)
+
+LOGs <- rbind(LOG_TALUDE_01,LOG_TALUDE_02,LOG_OA34_01,LOG_OA34_02, LOG_OA35_01,LOG_OA35_02,LOG_OA36_01,LOG_OA36_02,LOG_OA36_03,LOG_OA37_01,LOG_OA37_02,LOG_OA38_01,LOG_OA38_02)
+
+```
+
+### Calcular as interpolações
+
+```{r}
+c = 1
+contlinha = 1
+tabelao <- data.frame()
+
+while (c<=nrow(planilha)) {
+  
+  if (c<nrow(planilha)) {
+    dif <- as.numeric(difftime(hora[c+1], hora[c], units = 'mins')) #armazeno a diferença em dif
+    tabelao[contlinha,1:2] <- planilha[c,3:4] # copiar as coordenadas para o tabelao
+    fatlat <- (planilha[c+1,3]-planilha[c,3])/dif #calculo o fator das diferenças da latitude
+    fatlon <- (planilha[c+1,4]-planilha[c,4])/dif #calculo o fator das diferenças de longitude
+    cont = 1
+    contlinha <- contlinha + 1
+    
+    while (cont<dif) {     # aqui é para completar se a diferença for menor que 1 minuto
+      tabelao[contlinha,1] <- planilha[c,3]+(cont*fatlat)
+      tabelao[contlinha,2] <- planilha[c,4]+(cont*fatlon)
+      cont <- cont+1
+      contlinha <- contlinha + 1
+    }
+      
+  }else {    # aqui é para completar a ultima coordenada (ultima linha da tabela)
+    tabelao[contlinha,1:2] <- planilha[c,3:4]
+    }
+    
+  c <- c+1
+  } 
+  
+
+```
+
+
+### Calcular os segmentos de 5 MN
+
+
+```{r}
+tsegmento <- 5  #inserir o tamanho do segmento (padrao 5mn)
+segmento = 1 #segmento inicial
+tabsegmento <- data.frame() #crio a tabela de segmentos
+posseg <- data.frame() #contador para os segmentos
+c = 1
+cont = 0
+
+while (c<nrow(tabelao)) {
+  tabsegmento[c,1:2] <- tabelao[c,1:2]
+  tabsegmento[c,3:4] <- tabelao[c+1,1:2] #coloca coord inicial e final na mesma linha
+  tabsegmento[c,5] <- sqrt(((tabelao[c+1,1])-(tabelao[c,1]))^2+(((tabelao[c+1,2])-(tabelao[c,2]))
+                    *cos((((tabelao[c+1,1])+(tabelao[c,1]))/2)*pi/180))^2)*60 #calculo das milhas navegadas
+  cont <- cont + tabsegmento[c,5] # contador das milhas navegadas para separar os segmentos
+  tabsegmento[c,6] <- cont # coloco na tabela a distancia
+  if (cont>5){  # quando der as 5 milhas náuticas pular para o proximo segmento
+    posseg[segmento,1] <- segmento
+    posseg[segmento,2:3] <- tabsegmento[c,1:2]
+    segmento <- segmento+1
+    tabsegmento[c,7] <- segmento
+    cont = tabsegmento[c,5]
+    tabsegmento[c,6] <- cont
+  } else {tabsegmento[c,7] <- segmento 
+      if(c+1==nrow(tabelao)){
+          posseg[segmento,1] <- segmento
+          posseg[segmento,2:3] <- tabsegmento[c,3:4]
+      }
+  }
+  c <- c+1
+}
+
+segmentos <- data.frame()
+c = 1
+i = 1
+cont = 0
+ 
+while (i<=nrow(tabsegmento)) {
+  if (i < nrow(tabsegmento)){
+      if (c == tabsegmento[i,7]){
+        cont = cont+1
+      }else {
+        segmentos[c,1:2] <- tabsegmento[i-cont,1:2]
+        segmentos[c,3:4] <- tabsegmento[i-1,3:4]
+        segmentos[c,5:6] <- tabsegmento[i-1,6:7]
+        segmentos[c,7]<- tabsegmento[i-1,6]*1852*0.00016
+        c = c+1
+        cont = 0
+      }
+    
+  }else {
+    segmentos[c,1:2] <- tabsegmento[i-cont,1:2]
+    segmentos[c,3:4] <- tabsegmento[i,3:4]
+    segmentos[c,5:6] <- tabsegmento[i,6:7]
+    segmentos[c,7]<- tabsegmento[i-1,6]*1852*0.00016
+    }
+  
+  i <- i+1
+}
+
+row.names(segmentos) <- 1:87
+names(segmentos) <- c("Lat_i", "Long_i", "Lat_f", "Long_f", "Tamanho_NM","Segmento", "volume" )
+
+```
+
+
+## Contagem dos Organismos
+
+Dados retirados da planilha de contagem e identificação, preenchida durante as análises em laboratorio.
+
+
+```{r warning=FALSE}
+#Abrir a planilha
+planilhaorg <- read.xlsx("~/TCC/ODV & R/tabelaorganismos2.xlsx", 1) #tabela de organismos
+grupoorg <- read.xlsx("~/TCC/ODV & R/tabelaorganismos2.xlsx",3) #tabela de grupos
+
+planilhaorg[is.na(planilhaorg)] <- 0 # preencher com 0 os campos vazios
+organismos <- planilhaorg[1:43,-c(1,47)] #retira coluna total e segmentos
+
+
+orgseg <- planilhaorg[1:43,c(1,47)]
+colSums(organismos)
+
+```
+
+
+## Dados de TS, clh e profundidade 
+
+### Dados de Temperatura e Salinidade
+
+Dados do modelo **Global Ocean Physics Reanalyses** (GLORYS12V1)
+
+**Link para baixar os dados de Temperatura e Salinidade:**
+
+[CMEMS.GLORYSV3](https://resources.marine.copernicus.eu/?option=com_csw&view=details&product_id=GLOBAL_REANALYSIS_PHY_001_030)
+
+Resolução: 0,08x0,08 graus
+
+Média para os dias 15,16 e 17 para o mês de Maio de 2010
+
+Profundidade: 0.5m - 10m
+
+### Dados de Clorofila
+
+Dados da simulação **Global Reanalysis Bio 001 029** 
+
+**Link para baixar os dados de Clorofila:**
+
+[CMEMS.Clorofila](https://resources.marine.copernicus.eu/?option=com_csw&view=details&product_id=GLOBAL_REANALYSIS_BIO_001_029)
+
+Resolução: 0,25x0,25 graus
+
+Média para os dias 15,16 e 17 para o mês de Maio de 2010
+
+Profundidade: 0.5m - 10m
+
+### Dados da profundidade
+
+Dados do banco **General Bathymetric Chart of the Oceans (GEBCO)**
+
+**Link para baixar os dados de Batimetria:**
+
+[GEBCO.Profundidade](https://download.gebco.net/)
+
+Resolução: 15 arcoseg
+
+
+```{r}
+#carregar a pasta no computador com os arquivos
+#global-reanalysis-phy-daily_maio2010_20x20
+setwd("E:/Claus Inck/Documentos/TCC/ODV & R")
+# Abrir arquivo TS
+t <- nc_open("E:/Claus Inck/Documentos/TCC/ODV & R/global-reanalysis-phy-prof50m.nc")
+lat <- ncvar_get(t, "latitude")
+lon <- ncvar_get(t, "longitude")
+thetao <- ncvar_get(t, "thetao")
+so <- ncvar_get(t, "so")
+# Abrir arquivo Chla
+b <- nc_open("E:/Claus Inck/Documentos/TCC/ODV & R/global-reanalysis-bio-001-029-daily__maio2010_20x20.nc")
+chl <- ncvar_get(b, "chl")
+latchl <- ncvar_get(b, "latitude")
+lonchl <- ncvar_get(b, "longitude")
+profundidadets <- ncvar_get(t, "depth")
+# Abrir arquivo de profundidade GEBCO
+profGEBCO <- nc_open("E:/Claus Inck/Documentos/TCC/ODV & R/gebco_2020_n-20.0_s-40.0_w-60.0_e-40.0.nc")
+profundidade <- ncvar_get(profGEBCO, "elevation")
+latprof <- ncvar_get(profGEBCO, "lat")
+lonprof <- ncvar_get(profGEBCO, "lon")
+
+
+
+```
+
+### Juntando os dados ambientais
+
+
+```{r}
+
+dadoscoord <- data.frame()
+diagramats <- data.frame()
+c = 1
+
+while (c<=87)
+{
+  x <- which.min(abs(lon-((segmentos[c,2]+segmentos[c,4])/2))) #procura a menor diferença de longitude
+  y <- which.min(abs(lat-((segmentos[c,1]+segmentos[c,3])/2))) #procura a menor diferença de latitude
+  j <- which.min(abs(latprof-((segmentos[c,1]+segmentos[c,3])/2))) # aqui é a profundidade
+  k <- which.min(abs(lonprof-((segmentos[c,2]+segmentos[c,4])/2)))
+  m <- which.min(abs(latchl-((segmentos[c,1]+segmentos[c,3])/2)))
+  n <- which.min(abs(lonchl-((segmentos[c,2]+segmentos[c,4])/2)))
+  
+  while (is.na(thetao[x,y,8,1])){x <- x+1}#verifica se o valor é valido
+  while (is.na(chl[n,m,3,1])){n <- n+1}#verifica se o valor é valido
+  while (profundidade[k,j]>0){j <- j+1}#verifica se o valor é valido
+  dadoscoord[c,1] <- segmentos[c,6]
+  dadoscoord[c,2:3] <- segmentos[c,1:2]
+  dadoscoord[c,4] <- thetao[x,y,8,2]
+  dadoscoord[c,5] <- so[x,y,8,2]
+  dadoscoord[c,6] <- profundidade[k,j]
+  dadoscoord[c,7] <- chl[n,m,3,2]
+  dadoscoord[c,8] <- lon[x]
+  dadoscoord[c,9] <- lat[y]
+  dadoscoord[c,10] <- latprof[j]
+  dadoscoord[c,11] <- lonprof[k]
+  dadoscoord[c,12] <- latchl[m]
+  dadoscoord[c,13] <- lonchl[n]
+  dadoscoord[c,14] <- segmentos[c,7]
+  diagramats <- rbind(data.frame(V1 = thetao[x,y,,2][!is.na(thetao[x,y,,2])],
+                        V2=so[x,y,,2][!is.na(so[x,y,,2])],
+                        V3=profundidadets[1:length(thetao[x,y,,2][!is.na(thetao[x,y,,2])])]),diagramats)
+  c = c+1
+}
+
+names(dadoscoord)[1] <- ("Segmento")
+names(dadoscoord)[4:11] <- c("Temperatura", "Salinidade", "Profundidade",
+                             "Clorofila", "LonWOA", "latWOA","Latprof","Lonprof")
+names(dadoscoord)[14] <- ("Volume")
+
+datatable(dadoscoord)
+
+# colocar TS junto com organismos
+c =1
+for (i in 1:nrow(dadoscoord)) {
+  if(orgseg[c,1]==dadoscoord[i,1]){
+  orgseg[c,3:8]<- dadoscoord[i,2:7]
+  orgseg[c,9]<-dadoscoord[i,14]
+  orgseg[c,10]<-orgseg[c,2]/dadoscoord[i,14]
+  c <- c+1
+  if(c>nrow(orgseg)){c<-c-1}
+  }
+}
+names(orgseg)[10] <- ("Individuos")
+
+# Volume
+#organismosm3 <- organismos*
+organismosm3 <- organismos/orgseg[,9]
+
+```
+
+
+### Mapa T,S,Chla superficie
+
+```{r}
+# Criar tabela para os mapas de TS
+c<-1
+tabts<-data.frame()
+for(i in 1:length(lat)){
+    for (j in 1:length(lon)){
+        tabts[c,1] <- lat[i]
+        tabts[c,2] <- lon[j]
+        tabts[c,3] <- thetao[j,i,8,1]
+        tabts[c,4] <- thetao[j,i,8,2]
+        tabts[c,5] <- thetao[j,i,8,3]
+        tabts[c,6] <- so[j,i,8,1]
+        tabts[c,7] <- so[j,i,8,2]
+        tabts[c,8] <- so[j,i,8,3]
+        c <- c+1
+  }
+}
+names(tabts) <- c("Latitude", "Longitude", "Temperatura","Temperatura2","Temperatura3", "Salinidade", "Salinidade2", "Salinidade3")
+# Criar tabela para o mapa de Chla
+c<-1
+tabchl<-data.frame()
+for(i in 1:length(latchl)){
+    for (j in 1:length(lonchl)){
+        tabchl[c,1] <- latchl[i]
+        tabchl[c,2] <- lonchl[j]
+        tabchl[c,3] <- chl[j,i,8,1]
+        tabchl[c,4] <- chl[j,i,8,2]
+        tabchl[c,5] <- chl[j,i,8,3]
+        c <- c+1
+  }
+}
+names(tabchl) <- c("Latitude", "Longitude", "Clorofila","Clorofila2","Clorofila3")
+
+pt<-ggplot(tabts,aes(x=Longitude, y=Latitude, z=Temperatura )) +
+  geom_tile(aes(fill=Temperatura)) +
+  stat_contour(color="gray40", size=0.5, breaks = c(22,24,26)) +
+  scale_fill_gradientn(colours=c("blue","green","yellow","red")) +
+  geom_path(data = planilha, aes(x=Longitude, y=Latitude, z=NULL),size=2)+
+  labs(title = "Temperatura 10m")+ guides(fill=FALSE, color=FALSE)
+pt2<-ggplot(tabts,aes(x=Longitude, y=Latitude, z=Temperatura )) +
+  geom_tile(aes(fill=Temperatura2)) +
+  stat_contour(color="gray40", size=0.5, breaks = c(22,24,26)) +
+  scale_fill_gradientn(colours=c("blue","green","yellow","red")) +
+  geom_path(data = planilha, aes(x=Longitude, y=Latitude, z=NULL),size=2)+
+  labs(title = "Temperatura 10m")+ guides(fill=FALSE, color=FALSE)
+pt3<-ggplot(tabts,aes(x=Longitude, y=Latitude, z=Temperatura )) +
+  geom_tile(aes(fill=Temperatura3)) +
+  stat_contour(color="gray40", size=0.5, breaks = c(22,24,26)) +
+  scale_fill_gradientn(colours=c("blue","green","yellow","red")) +
+  geom_path(data = planilha, aes(x=Longitude, y=Latitude, z=NULL),size=2)+
+  labs(title = "Temperatura 10m")+ guides(fill=FALSE, color=FALSE)
+
+ps<-ggplot(tabts, aes(x=Longitude, y=Latitude, z=Salinidade)) +
+  geom_tile(aes(fill=Salinidade)) +
+  stat_contour(color="gray40", size=0.5, breaks = c(32,34,36)) +
+  scale_fill_gradientn(colours=c("blue","green","yellow","red")) +
+  geom_path(data = planilha, aes(x=Longitude, y=Latitude, z=NULL),size=2)+
+  labs(title = "Salinidade 10m")+ guides(fill=FALSE, color=FALSE)
+ps2<-ggplot(tabts, aes(x=Longitude, y=Latitude, z=Salinidade)) +
+  geom_tile(aes(fill=Salinidade2)) +
+  stat_contour(color="gray40", size=0.5, breaks = c(32,34,36)) +
+  scale_fill_gradientn(colours=c("blue","green","yellow","red")) +
+  geom_path(data = planilha, aes(x=Longitude, y=Latitude, z=NULL),size=2)+
+  labs(title = "Salinidade 10m")+ guides(fill=FALSE, color=FALSE)
+ps3<-ggplot(tabts, aes(x=Longitude, y=Latitude, z=Salinidade)) +
+  geom_tile(aes(fill=Salinidade3)) +
+  stat_contour(color="gray40", size=0.5, breaks = c(32,34,36)) +
+  scale_fill_gradientn(colours=c("blue","green","yellow","red")) +
+  geom_path(data = planilha, aes(x=Longitude, y=Latitude, z=NULL),size=2)+
+  labs(title = "Salinidade 10m")+ guides(fill=FALSE, color=FALSE)
+
+pc<-ggplot(tabchl,aes(x=Longitude, y=Latitude, z=Clorofila,)) +
+  geom_tile(aes(fill=Clorofila)) +
+  stat_contour(color="gray40", size=0.5, breaks = c(0.25,0.50,0.75)) +
+  scale_fill_gradientn(colours=c("blue","green","yellow","red")) +
+  geom_path(data = planilha, aes(x=Longitude, y=Latitude, z=NULL),size=2)+
+  labs(title = "Clorofila 10m")+ guides(fill=FALSE, color=FALSE)
+pc2<-ggplot(tabchl,aes(x=Longitude, y=Latitude, z=Clorofila,)) +
+  geom_tile(aes(fill=Clorofila2)) +
+  stat_contour(color="gray40", size=0.5, breaks = c(0.25,0.50,0.75)) +
+  scale_fill_gradientn(colours=c("blue","green","yellow","red")) +
+  geom_path(data = planilha, aes(x=Longitude, y=Latitude, z=NULL),size=2)+
+  labs(title = "Clorofila 10m")+ guides(fill=FALSE, color=FALSE)
+pc3<-ggplot(tabchl,aes(x=Longitude, y=Latitude, z=Clorofila,)) +
+  geom_tile(aes(fill=Clorofila3)) +
+  stat_contour(color="gray40", size=0.5, breaks = c(0.25,0.50,0.75)) +
+  scale_fill_gradientn(colours=c("blue","green","yellow","red")) +
+  geom_path(data = planilha, aes(x=Longitude, y=Latitude, z=NULL),size=2)+
+  labs(title = "Clorofila 10m") + guides(fill=FALSE, color=FALSE)
+
+grid.arrange(pt,pt2,pt3,ps,ps2,ps3,pc,pc2,pc3,ncol=3,nrow=3)
+```
+
+
+### Mapa velocidade de corrente superficial
+
+```{r}
+t <- nc_open("~/TCC/ODV & R/global-reanalysis-dados fisicos-dias-maio.nc")
+HS <- ncvar_get(t, "zos")
+latzos <- ncvar_get(t, "latitude")
+lonzos <- ncvar_get(t, "longitude")
+u <- ncvar_get(t, "uo")
+v <- ncvar_get(t, "vo")
+u1<-raster(t(u[, ,1,1])[ncol(u):1, ])
+v1<-raster(t(v[, ,1,1])[ncol(u):1, ])
+w <- brick(u1,v1)
+
+extent(w) <- c(min(lonzos), max(lonzos), min(latzos), max(latzos))
+slope <- sqrt(w[[1]]^2 + w[[2]]^2)
+jet <- colorRampPalette(c('#00007F', 'blue', '#7FFF7F', 'yellow', '#FF7F00', 'red', '#7F0000'))
+
+rasterVis::vectorplot(w * 10,  isField = "dXY", region = slope, interpolate = TRUE, narrows = 1000, col.regions=jet, size=3)
+
+```
+
+### Grupo por segmento
+
+```{r}
+ggplot(grupoorg, aes(x = segmento, y = ind, fill = grupo)) +
+  geom_bar(stat = "identity", width = 1,position = "fill",color="black") +
+  scale_x_continuous(breaks = seq(from = 1, to = 87, by = 2))+
+  theme_bw()
+
+```
+
+### Temperatura X salinidade
+
+```{r}
+f<-ggplot(dadoscoord, aes(x=Segmento,y=Temperatura)) + geom_point(color="red") +geom_line(color="red") +
+  scale_x_continuous(breaks = seq(from = 1, to = 87, by = 2)) 
+f2 <- f + geom_line(aes(y=Salinidade/1.56),color="darkblue" ) +geom_point(shape = 15, aes(y=Salinidade/1.56),color="darkblue")
+f3 <- f2 +scale_y_continuous(sec.axis = sec_axis(~.*1.56, name = "Salinidade (PSU)")) +
+  labs(x="Segmento CPR", y="Temperatura (°C)") +theme_bw()
+
+f3
+```
+
+### Organismos X Clorofila
+
+```{r}
+
+g1 <- ggplot(orgseg, aes(x=Segmento,y=Individuos)) + geom_bar(stat = "identity", color="black", fill="darkblue") + 
+  scale_x_continuous(breaks = seq(from = 1, to = 87, by = 2))
+g2 <- g1 + geom_point(data = dadoscoord, aes(x=Segmento, y=Clorofila*150)) +
+  geom_line(data = dadoscoord, aes(x=Segmento, y=Clorofila*150))
+g3 <- g2 + scale_y_continuous(breaks = seq(from = 0, to = 150, by = 25),sec.axis = sec_axis(~./150, name = "Clorofila-a (mg/m³)")) + 
+  labs(x="Segmento CPR",y="Zooplâncton (ind/m³)")+theme_bw()
+
+g3
+```
+
+### Mapa organismos por segmento
+
+```{r}
+Bathy <- getNOAA.bathy(lon1 = -49, lon2 = -42,lat1 = -27.5, lat2 = -22.5, resolution = 1)
+autoplot.bathy(Bathy, geom=c("raster")) +
+  geom_contour(aes(z=z),breaks=c(0,-50,-200,-500),colour="gray40", size=0.5) +scale_fill_etopo() +
+  geom_point(data=orgseg, aes(x=Long_i,y=Lat_i, size=Individuos, color=Individuos)) + scale_size(range = c(0, 10))+
+  scale_colour_gradient(low = "yellow", high="red") 
+```
+
+### Diagrama TS
+
+```{r}
+sal = diagramats$V2
+pot.temp = diagramats$V1
+reference.p = 0.5
+col.par = -diagramats$V3
+col.name = "Profundidade (m)" 
+
+TS <- expand.grid(
+    sal = seq(floor(min(sal, na.rm = TRUE)), ceiling(max(sal, na.rm = TRUE)), length.out = 100),
+    pot.temp = seq(floor(min(pot.temp, na.rm = TRUE)), ceiling(max(pot.temp, na.rm = TRUE)), 
+                   length.out = 100))
+TS$density <- gsw_rho_t_exact(SA = TS$sal, t = TS$pot.temp, p = reference.p) - 1000
+h.isopycnals <- subset(TS, sal == ceiling(max(TS$sal)) & 
+                      round(density,1) %in% seq(min(round(TS$density*2)/2, na.rm = TRUE),
+                      max(round(TS$density*2)/2, na.rm = TRUE),by = .5))
+
+h.isopycnals$density <- round(h.isopycnals$density, 1)
+h.isopycnals <- aggregate(pot.temp~density, h.isopycnals, mean) 
+    
+data <- data.frame(sal, pot.temp, col.par)  
+  
+ggplot() +
+    geom_contour(data = TS, aes(x = sal, y = pot.temp, z = density), col = "grey", linetype = "dashed",
+                 breaks = seq(min(round(TS$density*2)/2, na.rm = TRUE), 
+                 max(round(TS$density*2)/2, na.rm = TRUE), by = .5)) +
+    geom_point(data = data[is.na(data$col.par),], aes(sal, pot.temp), color = "black") +
+    geom_point(data = data[!is.na(data$col.par),], aes(sal, pot.temp, color = col.par)) +   
+    annotate(geom = "text", x = floor(min(TS$sal, na.rm = TRUE)), 
+             y = ceiling(max(TS$pot.temp, na.rm = TRUE)), 
+             hjust = "inward", vjust = "inward", color = "grey60", size = 10,
+             label = paste0('sigma',"[",reference.p,"]"), parse = T) +
+    scale_x_continuous(name = "Salinidade (PSU)", expand = c(0,0), 
+                       limits = c(floor(min(TS$sal, na.rm = TRUE)), ceiling(max(TS$sal, na.rm = TRUE)))) + 
+    scale_y_continuous(name = "Temperatura (°C)", 
+                       limits = c(floor(min(TS$pot.temp, na.rm = TRUE)), 
+                       ceiling(max(TS$pot.temp, na.rm = TRUE)))) +
+    scale_color_gradientn(colors = c("blue", "green", "yellow", "red"), name = col.name) +
+                       theme_bw() +
+    geom_text(data = h.isopycnals,aes(x = ceiling(max(TS$sal)), y = pot.temp, label = density),
+                         hjust = "inward", vjust = 0, col = "grey")+
+  geom_point(aes(x=c(36,35,33.4),y=c(25,21,22.7)),color="black")  +
+  geom_text(aes(x=36.2,y=25,label="AT"),color = "black")+
+  geom_text(aes(x=35.25,y=21,label="ACAS"),color = "black" )+
+  geom_text(aes(x=33.4,y=22.,label="AC"),color = "black" )
+
+```
+```{r}
+sal = diagramats$V2
+pot.temp = diagramats$V1
+reference.p = 0.5
+col.par = -diagramats$V3
+col.name = "Profundidade (m)" 
+
+TS <- expand.grid(
+    sal = seq(floor(min(sal, na.rm = TRUE)), ceiling(max(sal, na.rm = TRUE)), length.out = 100),
+    pot.temp = seq(floor(min(pot.temp, na.rm = TRUE)), ceiling(max(pot.temp, na.rm = TRUE)), 
+                   length.out = 100))
+TS$density <- gsw_rho_t_exact(SA = TS$sal, t = TS$pot.temp, p = reference.p) - 1000
+h.isopycnals <- subset(TS, sal == ceiling(max(TS$sal)) & 
+                      round(density,1) %in% seq(min(round(TS$density*2)/2, na.rm = TRUE),
+                      max(round(TS$density*2)/2, na.rm = TRUE),by = .5))
+
+h.isopycnals$density <- round(h.isopycnals$density, 1)
+h.isopycnals <- aggregate(pot.temp~density, h.isopycnals, mean) 
+    
+data <- data.frame(sal, pot.temp, col.par)  
+  
+ggplot() +
+    geom_contour(data = TS, aes(x = sal, y = pot.temp, z = density), col = "grey", linetype = "dashed",
+                 breaks = seq(min(round(TS$density*2)/2, na.rm = TRUE), 
+                              max(round(TS$density*2)/2, na.rm = TRUE), by = .5)) +
+    geom_point(data = data[is.na(data$col.par),], aes(sal, pot.temp)) +
+    geom_point(data = data[!is.na(data$col.par),], aes(sal, pot.temp)) +   
+    annotate(geom = "text", x = floor(min(TS$sal, na.rm = TRUE)), 
+             y = ceiling(max(TS$pot.temp, na.rm = TRUE)), 
+             hjust = "inward", vjust = "inward", color = "grey60", size = 10,
+             label = paste0('sigma',"[",reference.p,"]"), parse = T) +
+    scale_x_continuous(name = "Salinidade (PSU)", expand = c(0,0), 
+                       limits = c(floor(min(TS$sal, na.rm = TRUE)), ceiling(max(TS$sal, na.rm = TRUE)))) + 
+    scale_y_continuous(name = "Temperatura (°C)", 
+                       limits = c(floor(min(TS$pot.temp, na.rm = TRUE)), 
+                                  ceiling(max(TS$pot.temp, na.rm = TRUE)))) +
+    theme_bw() +
+    geom_text(data = h.isopycnals,aes(x = ceiling(max(TS$sal)), y = pot.temp, label = density),
+              hjust = "inward", vjust = 0, col = "grey")+
+    geom_text(data = orgseg,aes(x = orgseg$Salinidade), y = orgseg$Temperatura-0.2, label = orgseg$Segmento)+
+    geom_rect(aes(xmin=35.7, xmax=36, ymin=21, ymax=25), fill="red", alpha=0.1, color="black",linetype="dashed") + geom_rect(aes(xmin=34, xmax=35.7, ymin=21, ymax=22), fill="blue", alpha=0.1, color="black",linetype="dashed") + geom_rect(aes(xmin=34, xmax=35.7, ymin=22, ymax=25), fill="yellow", alpha=0.1, color="black",linetype="dashed") +
+  annotate(geom = "text", x = 35.85, y = 24.85, hjust = "inward", vjust = "inward", color = "grey60", 
+           size = 9,label = "AT", parse = T)
+
+
+```
+
+
+### Batimetria do transecto
+
+```{r}
+
+transect <- dadoscoord[,c(3,2,1,6)]
+plotProfile(transect, xlab = "Segmento CPR", ylab = "Profundidade (m)")
+
+```
+
+### Coeficientes de correlação
+
+```{r}
+# correlação Organismos x Temperatura
+cor.test(orgseg$Soma,orgseg$Temperatura)
+# correlação Organismos x Salinidade
+cor.test(orgseg$Soma,orgseg$Salinidade)
+# correlação Organismos x Clorofila
+cor.test(orgseg$Soma,orgseg$Clorofila)
+```
+
+
