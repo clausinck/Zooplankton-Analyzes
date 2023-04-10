@@ -1,0 +1,269 @@
+---
+title: "Untitled"
+author: "Claus Inck"
+date: "2023-03-01"
+output: html_document
+---
+
+```{r, echo=FALSE, message=FALSE}
+library(xlsx)
+library(sf)
+library(cowplot)
+library(rnaturalearthdata)
+library(rnaturalearth)
+library(ggplot2)
+library(ggspatial)
+library(knitr)
+library(kableExtra)
+
+
+```
+
+
+___
+
+## **Rota 1BSA**
+___
+
+
+```{r, echo=FALSE}
+#abrir a planilha com as coordenadas
+#tratar os dados com as horas!
+#setwd("E:/Claus Inck/Documentos/mestrado/dissertação/")
+planilha <- read.xlsx("E:/Claus Inck/Documentos/mestrado/dissertação/Planilharota1bsa.xlsx", 1) 
+planilha[,2] <- format(planilha[,2], "%H:%M") 
+hora <- as.POSIXct(paste(planilha$Data, planilha$Hora), format = "%Y-%m-%d %H:%M", tz = "UTC")
+planilha[,3:4] <- round(planilha[,3:4], digits = 4)
+rotas = planilha
+
+
+```
+
+
+
+```{r, echo=FALSE}
+#vou colocar só a primeira rota, tem que mudar depois a linha abaixo
+planilha = rotas[1:2,]
+hora = hora[1:2]
+
+#interpolaçã para cada minuto
+c = 1
+contlinha = 1
+tabelao <- data.frame()
+rota=1
+
+  
+while (c<=nrow(planilha)) {
+  
+  if (c<nrow(planilha)) {
+    dif <- as.numeric(difftime(hora[c+1], hora[c], units = 'mins')*2) #armazeno a diferença em dif
+    tabelao[contlinha,1:2] <- planilha[c,3:4] # copiar as coordenadas para o tabelao
+    tabelao[contlinha,3] <- hora[c]
+    fatlat <- (planilha[c+1,3]-planilha[c,3])/dif #calculo o fator das diferenças da latitude
+    fatlon <- (planilha[c+1,4]-planilha[c,4])/dif #calculo o fator das diferenças de longitude
+    cont = 1
+    contlinha <- contlinha + 1
+    
+    while (cont<dif) {     # aqui é para completar se a diferença for menor que 1 minuto
+      tabelao[contlinha,1] <- planilha[c,3]+(cont*fatlat)
+      tabelao[contlinha,2] <- planilha[c,4]+(cont*fatlon)
+      tabelao[contlinha,3] <- hora[c]+(difftime(hora[c+1], hora[c], units = 'mins')/dif*cont)
+      cont <- cont+1
+      contlinha <- contlinha + 1
+    }
+      
+  }else {    # aqui é para completar a ultima coordenada (ultima linha da tabela)
+    tabelao[contlinha,1:2] <- planilha[c,3:4]
+    tabelao[contlinha,3] <- hora[c]
+    }
+    
+  c <- c+1
+
+  } 
+
+
+
+
+# calcular os segmentos
+tsegmento <- 5  #inserir o tamanho do segmento (padrao 5mn)
+segmento = 1 #segmento inicial
+tabsegmento <- data.frame() #crio a tabela de segmentos
+posseg <- data.frame() #contador para os segmentos
+c = 1
+cont = 0
+
+
+
+
+for (c in 1:(nrow(tabelao)-1)) {
+  #coloca coord inicial e final na mesma linha
+  tabsegmento[c,1:4] <- cbind(tabelao[c,1:2],tabelao[c+1,1:2]) 
+  #calculo das milhas navegadas
+  tabsegmento[c,5] <- sqrt(((tabelao[c+1,1])-(tabelao[c,1]))^2+(((tabelao[c+1,2])-(tabelao[c,2]))
+                      *cos((((tabelao[c+1,1])+(tabelao[c,1]))/2)*pi/180))^2)*60 
+  # contador das milhas navegadas para separar os segmentos
+  cont <- cont + tabsegmento[c,5] 
+  # coloco na tabela a distancia
+  tabsegmento[c,6] <- cont 
+  #marcar as horas
+  tabsegmento[c,7] <- mean(tabelao[c:c+1,3])
+  # quando der as 5 milhas náuticas pular para o proximo segmento
+  if (cont>5){  
+    posseg[segmento,1] <- segmento
+    posseg[segmento,2:3] <- tabsegmento[c,1:2]
+    segmento <- segmento+1
+    tabsegmento[c,8] <- segmento
+    cont = tabsegmento[c,5]
+    tabsegmento[c,6] <- cont
+  } else {tabsegmento[c,8] <- segmento 
+      if(c+1==nrow(tabelao)){
+          posseg[segmento,1] <- segmento
+          posseg[segmento,2:3] <- tabsegmento[c,3:4]
+      }
+    }
+}
+
+segmentos <- data.frame()
+c = 1
+i = 1
+cont = 0
+ 
+while (i<=nrow(tabsegmento)) {
+  if (i < nrow(tabsegmento)){
+      if (c == tabsegmento[i,8]){
+        cont = cont+1
+      }else {
+        segmentos[c,1:2] <- tabsegmento[i-cont,1:2]
+        segmentos[c,3:4] <- tabsegmento[i-1,3:4]
+        segmentos[c,5:6] <- tabsegmento[i-1,6:7]
+        segmentos[c,7]<- tabsegmento[i-1,6]*1852*0.00016
+        c = c+1
+        cont = 0
+      }
+    
+  }else {
+    segmentos[c,1:2] <- tabsegmento[i-cont,1:2]
+    segmentos[c,3:4] <- tabsegmento[i,3:4]
+    segmentos[c,5:6] <- tabsegmento[i,6:7]
+    segmentos[c,7]<- tabsegmento[i-1,6]*1852*0.00016
+    }
+  
+  i <- i+1
+}
+
+row.names(segmentos) <- 1:nrow(segmentos)
+segmentos = cbind(1:nrow(segmentos),segmentos)
+names(segmentos) <- c("Segmento",
+                      "Latiitude inicial", 
+                      "Longitude inicial", 
+                      "Latitude final", 
+                      "Longitude final",
+                      "Tamanho (mn)",
+                      "Data", 
+                      "volume (m3)" )
+
+
+segmentos[,2:5] = round(segmentos[,2:5], digits = 4)
+segmentos[,c(6,8)] = round(segmentos[,c(6,8)],digits = 2)
+
+infos = planilha
+infos = cbind(c("Lancamento","Recolhimento"),infos)
+names(infos) <- c("Evento","Data","Hora", "Latitude","Longitude")
+row.names(infos) = NULL
+
+```
+
+
+
+```{r}
+#carregar a pasta no computador com os arquivos
+#global-reanalysis-phy-daily_maio2010_20x20
+
+# Abrir arquivo Temperatura
+t <- nc_open("E:/Claus Inck/Documentos/mestrado/dissertação/Dados copernicus/dados temperatura/global-analysis-forecast-phy-001-024_1666023140208.nc")
+
+# Abrir arquivo Salinidade
+s <- nc_open("E:/Claus Inck/Documentos/mestrado/dissertação/Dados copernicus/dados salinidade/global-analysis-forecast-phy-001-024_1666023544788.nc")
+
+# Abrir arquivo Correntes
+c <- nc_open("E:/Claus Inck/Documentos/mestrado/dissertação/Dados copernicus/dados correntes/global-analysis-forecast-phy-001-024_1666028133956.nc")
+
+# Abrir arquivo Clorofila
+chla <- nc_open("E:/Claus Inck/Documentos/mestrado/dissertação/Dados copernicus/dados clorofila/global-analysis-forecast-bio-001-028-daily_1666028098039.nc")
+
+
+#extrair informações dos dados de temperatura
+latthetao <- ncvar_get(t, "latitude")
+lonthetao <- ncvar_get(t, "longitude")
+thetao <- ncvar_get(t, "thetao")
+profthetao <- ncvar_get(t, "depth")
+timethetao <- ncvar_get(t, "time")
+
+
+#extrair informações dos dados de salinidade
+latsal <- ncvar_get(s, "latitude")
+lonsal <- ncvar_get(s, "longitude")
+sal <- ncvar_get(s, "so")
+profsal <- ncvar_get(s, "depth")
+timesal <- ncvar_get(s, "time")
+
+
+#extrair informações dos dados de correntes
+latcorr <- ncvar_get(c, "latitude")
+loncorr <- ncvar_get(c, "longitude")
+ucorr <- ncvar_get(c, "uo")
+vcorr <- ncvar_get(c, "vo")
+profcorr <- ncvar_get(c, "depth")
+timecorr <- ncvar_get(c, "time")
+
+#extrair informações dos dados de clorofila
+latchl <- ncvar_get(chla, "latitude")
+lonchl <- ncvar_get(chla, "longitude")
+chl <- ncvar_get(chla, "chl")
+profchl <- ncvar_get(chla, "depth")
+timechl <- ncvar_get(chla, "time")
+```
+
+
+
+```{r}
+perfiltemp <- data.frame()
+perfilsal <- data.frame()
+perfilchl <- data.frame()
+
+c = 1
+
+while (c<=nrow(segmentos))
+{
+  x <- which.min(abs(lonthetao-((segmentos[c,3]+segmentos[c,5])/2))) #procura a menor diferença de longitude
+  y <- which.min(abs(latthetao-((segmentos[c,2]+segmentos[c,4])/2))) #procura a menor diferença de latitude
+  j <- which.min(abs(latsal-((segmentos[c,2]+segmentos[c,4])/2))) # aqui é a profundidade
+  k <- which.min(abs(lonsal-((segmentos[c,3]+segmentos[c,5])/2)))
+  m <- which.min(abs(latchl-((segmentos[c,2]+segmentos[c,4])/2)))
+  n <- which.min(abs(lonchl-((segmentos[c,3]+segmentos[c,5])/2)))
+  
+  while (is.na(thetao[x,y,8,1])){x <- x+1}#verifica se o valor é valido
+  while (is.na(chl[n,m,3,1])){n <- n+1}#verifica se o valor é valido
+  while (is.na(sal[k,j,8,1])){j <- j+1}#verifica se o valor é valido
+  
+  perfiltemp[1:length(thetao[x,y,,1]),c] <- thetao[x,y,,1]
+  perfilsal[1:length(sal[k,j,,1]),c] <- sal[k,j,,1]
+  perfilchl[1:length(chl[n,m,,1]),c] <- chl[n,m,,1]
+  
+  c = c+1
+}
+names(perfiltemp) <- segmentos$Segmento
+names(perfilsal) <- segmentos$Segmento
+names(perfilchl) <- segmentos$Segmento
+row.names(perfiltemp) <- round(profthetao, 2)
+row.names(perfilsal) <- round(profsal, 2)
+row.names(perfilchl) <- round(profchl, 2)
+
+```
+
+names(dadoscoord)[1] <- ("Segmento")
+names(dadoscoord)[4:11] <- c("Temperatura", "Salinidade", "Profundidade",
+                             "Clorofila", "LonWOA", "latWOA","Latprof","Lonprof")
+names(dadoscoord)[14] <- ("Volume")
+
+datatable(dadoscoord)
